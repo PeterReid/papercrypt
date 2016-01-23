@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset='utf-8'>
+ 
+<style>
+div.keypad input {
+  width:3em;
+  height: 3em;
+  margin: .2em;
+}
+div.keypad {
+  text-align: center;
+}
+</style>
+
+</head>
+<body>
+
+<div>
+  <a href='#' id='modeDecrypt'>Decrypt</a>
+  <a href='#' id='modeEncrypt'>Encrypt</a>
+</div>
+
+
+
+
+<div class='encryptOnly'>
+  Text to encrypt: <input id='inputPlaintext' />
+</div>
+
+<div class='keypad decryptOnly'>
+  <div>
+    <input type='button' value = '0' /><input type='button' value = '1' /><input type='button' value = '2' /><input type='button' value = '3' />
+  </div>
+  <div>
+    <input type='button' value = '4' /><input type='button' value = '5' /><input type='button' value = '6' /><input type='button' value = '7' />
+  </div>
+  <div>
+    <input type='button' value = '8' /><input type='button' value = '9' /><input type='button' value = 'A' /><input type='button' value = 'B' />
+  </div>
+  <div>
+    <input type='button' value = 'C' /><input type='button' value = 'D' /><input type='button' value = 'E' /><input type='button' value = 'F' />
+  </div>
+</div>
+
+<div class='decryptOnly'>Encrypted: <input style='width:100%' id='inputCiphertext' /></div>
+
+
+<div>Password: <input type='password' id='inputPassword' /></div>
+
+<div class='decryptOnly'><input type='button' id='decrypt' value='Decrypt' /></div>
+
+<div class='encryptOnly'><input type='button' id='encrypt' value='Encrypt' /></div>
+
+<div id='decryptedResult' class='decryptOnly'></div>
+
+<div id='encryptedResult' class='encryptOnly'></div>
+
+<script>
+var inputCiphertext = document.getElementById('inputCiphertext');
+var inputPassword = document.getElementById('inputPassword');
+ 
+var inputs = document.getElementsByTagName('input');
+for (var i = 0; i < inputs.length; i++) {
+  if (inputs[i].parentNode.parentNode.className.indexOf('keypad')>=0) {
+    inputs[i].onclick = function() {
+      inputCiphertext.value += this.value;
+    }.bind(inputs[i]);
+  }
+}
+
+var error = alert;
+
+function scramble(inputBytes) {
+  var inputWords = [];
+  for (var i=0; i<16; i++) {
+    inputWords.push(
+      inputBytes[i*4] 
+      | (inputBytes[i*4+1]<<8) 
+      | (inputBytes[i*4+2]<<16)
+      | (inputBytes[i*4+3]<<24)
+    );
+  }
+  
+  function plus(v, w) {
+    return (v + w) & 0xffffffff;
+  }
+  function xor(v, w) {
+    return v ^ w;
+  }
+  function rotate(v, c) {
+    return ((v << c) & 0xffffffff) | ((v>>>(32-c)) & 0xffffffff);
+  }
+  var x = new Array(16);
+  var i;
+  for (i=0; i<16; i++) x[i] = inputWords[i];
+  var indices = [
+    [ 0, 4, 8,12 ],
+    [ 1, 5, 9,13 ],
+    [ 2, 6,10,14 ],
+    [ 3, 7,11,15 ],
+    [ 0, 5,10,15 ],
+    [ 1, 6,11,12 ],
+    [ 2, 7, 8,13 ],
+    [ 3, 4, 9,14 ]
+  ];
+  for (i=8; i>0; i-=2) {
+    for (var j=0; j<8; j++) {
+      var abcd = indices[j];
+      var a = abcd[0];
+      var b = abcd[1];
+      var c = abcd[2];
+      var d = abcd[3];
+      x[a] = plus(x[a],x[b]); x[d] = rotate(xor(x[d],x[a]),16);
+      x[c] = plus(x[c],x[d]); x[b] = rotate(xor(x[b],x[c]),12);
+      x[a] = plus(x[a],x[b]); x[d] = rotate(xor(x[d],x[a]), 8);
+      x[c] = plus(x[c],x[d]); x[b] = rotate(xor(x[b],x[c]), 7);
+    }
+  }
+  
+  for (i=0; i<16; i++) {
+    var resultWord = plus(x[i], inputWords[i]);
+    inputBytes[i*4] = (resultWord & 0xff);
+    inputBytes[i*4+1] = ((resultWord>>>8) & 0xff);
+    inputBytes[i*4+2] = ((resultWord>>>16) & 0xff);
+    inputBytes[i*4+3] = ((resultWord>>>24) & 0xff);
+  }
+}
+
+function computeNonce(secret) {
+  var block = new Array();
+  for (var i=0; i<64; i++) {
+    block.push(0);
+  }
+  
+  while (true) {
+    for (var i=0; i<64 && i<secret.length; i++) {
+      block[i] ^= secret.charCodeAt(i) % 256;
+    }
+    
+    scramble(block);
+    
+    if (secret.length <= 64) {
+      return [block[0], block[1]];
+    }
+    secret = secret.substr(64)
+  }
+}
+
+function buildInputBlock(password, nonce, blockCounter) {
+  var block = [];
+  for(var i=0; i<64; i++) block.push(0);
+  for (var i=0; i<password.length; i++) {
+    block[i%60] ^= password.charCodeAt(i) % 256;
+  }
+  
+  block[60] = nonce[0];
+  block[61] = nonce[1];
+  block[62] = blockCounter & 0xff;
+  block[63] = (blockCounter >> 8) & 0xff;
+  
+  return block;
+}
+
+function crypt(bytes, nonce, password) {
+  var bytesIdx = 0;
+  var blockCounter = 0;
+  while (bytesIdx < bytes.length) {
+    var block = buildInputBlock(password, nonce, blockCounter);
+    scramble(block);
+    
+    for (var i=0; i<block.length && bytesIdx+i<bytes.length; i++) {
+      bytes[i] ^= block[i];
+      //assert(0<=bytes[i] && bytes[i] < 256);
+    }
+    
+    bytesIdx += 64;
+    blockCounter++;
+  }
+}
+
+function ensureAscii(str) {
+  var bs = [];
+  for (var i=0; i<str.length; i++) {
+    var c = str.charCodeAt(i);
+    if (c>=256) {
+      throw 'Secrets must only be simple (ASCII) characters'
+    }
+    bs.push(c);
+  }
+  return bs;
+}
+
+function toHex(bytes) {
+  var hex = '';
+  for (var i=0; i<bytes.length; i++) {
+    hex += (bytes[i] + 0x100).toString(16).substr(1).toUpperCase();
+    if (i%2==1) hex += ' ';
+  }
+  return hex;
+}
+
+function encrypt(secret, password) {
+  var nonce = computeNonce(secret);
+  var bytes = ensureAscii(secret);
+  crypt(bytes, nonce, password);
+  bytes.unshift(nonce[1]);
+  bytes.unshift(nonce[0]);
+  return toHex(bytes);
+}
+
+function decrypt(ciphertext, password) {
+  ciphertext = ciphertext.replace(/ /g, '').toUpperCase();
+  if (!ciphertext.match(/^([A-F0-9][A-F0-9])+$/)) {
+    return 'Mistake in ciphertext!';
+  }
+  var bs = [];
+  for (var i=0; i<ciphertext.length; i+=2) {
+    bs.push(parseInt(ciphertext.substr(i, 2), 16));
+  }
+  
+  var nonce = [bs[0], bs[1]];
+  bs.shift();
+  bs.shift();
+  crypt(bs, nonce, password);
+  var secret = '';
+  for (var i=0; i<bs.length; i++) {
+    secret += String.fromCharCode(bs[i]);
+  }
+  
+  var correctNonce = computeNonce(secret);
+  if (nonce[0]!=correctNonce[0] || nonce[1]!=correctNonce[1]) {
+    return 'Mistake in ciphertext -- bad checksum';
+  }
+  
+  return secret;
+}
+
+
+document.getElementById('decrypt').onclick = function() {
+  var ciphertext = inputCiphertext.value;
+  var password = inputPassword.value;
+  
+  var result = decrypt(ciphertext, password);
+  document.getElementById('decryptedResult').textContent = result;
+}
+
+document.getElementById('encrypt').onclick = function() {
+  var plaintext = inputPlaintext.value;
+  var password = inputPassword.value;
+  
+  var result = encrypt(plaintext, password);
+  document.getElementById('encryptedResult').textContent = result;
+}
+
+function displayAll(className, how) {
+  var es = document.getElementsByClassName(className);
+  for (var i=0; i<es.length; i++) {
+    es[i].style.display = how;
+  }
+}
+
+var toDecrypt = document.getElementById('modeDecrypt').onclick = function() {
+  displayAll('decryptOnly', 'block');
+  displayAll('encryptOnly', 'none');
+}
+document.getElementById('modeEncrypt').onclick = function() {
+  displayAll('decryptOnly', 'none');
+  displayAll('encryptOnly', 'block');
+}
+
+toDecrypt();
+
+</script>
+
+</body>
+</html>
